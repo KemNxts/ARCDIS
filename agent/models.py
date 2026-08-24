@@ -22,6 +22,7 @@ class AttackEvent:
     features: Dict[str, Any]
     action_taken: str
     severity: str
+    local_anomaly_score: float = 0.0
     raw_summary: Optional[str] = None
 
     def to_dict(self):

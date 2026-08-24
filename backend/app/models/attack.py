@@ -14,6 +14,7 @@ class AttackModel(BaseModel):
     features: Dict[str, Any] = Field(default_factory=dict)
     action_taken: str
     severity: str
+    local_anomaly_score: float = 0.0
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     raw_summary: Optional[str] = None
 

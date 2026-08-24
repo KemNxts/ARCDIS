@@ -11,6 +11,7 @@ class AttackReport(BaseModel):
     features: Dict[str, Any]
     action_taken: str
     severity: str
+    local_anomaly_score: float = 0.0
     raw_summary: Optional[str] = None
 
 class AttackResponse(BaseModel):
@@ -24,6 +25,7 @@ class AttackResponse(BaseModel):
     features: Dict[str, Any]
     action_taken: str
     severity: str
+    local_anomaly_score: float = 0.0
     timestamp: datetime
     raw_summary: Optional[str] = None
 

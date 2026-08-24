@@ -1,8 +1,79 @@
+import os
+import time
+import shutil
 import psutil
 from typing import List
 from utils import logger
 
 class Preventer:
+    @staticmethod
+    def quarantine_and_terminate(pid: int, files_to_quarantine: list = None) -> bool:
+        """
+        Suspends the process to halt encryption, quarantines the specific files it was touching,
+        and then completely terminates the process tree.
+        """
+        try:
+            parent = psutil.Process(pid)
+            # 1. Instantly Suspend to halt encryption
+            parent.suspend()
+            for child in parent.children(recursive=True):
+                try:
+                    child.suspend()
+                except:
+                    pass
+            
+            logger.info(f"Suspended ransomware process tree (PID {pid}) to halt encryption.")
+            
+            # 2. Quarantine files
+            if files_to_quarantine:
+                quarantine_dir = "/tmp/arcdis_quarantine"
+                os.makedirs(quarantine_dir, exist_ok=True)
+                for f in files_to_quarantine:
+                    try:
+                        if os.path.exists(f):
+                            filename = os.path.basename(f)
+                            # Append timestamp to avoid collisions
+                            quarantine_path = os.path.join(quarantine_dir, f"{filename}_{int(time.time())}.quarantined")
+                            shutil.move(f, quarantine_path)
+                            logger.info(f"Quarantined suspicious file: {f} -> {quarantine_path}")
+                    except Exception as e:
+                        logger.warning(f"Could not quarantine {f}: {e}")
+            
+            # 3. Terminate Tree
+            return Preventer.terminate_process_tree(pid)
+            
+        except psutil.NoSuchProcess:
+            logger.warning(f"Process {pid} already dead, cannot quarantine/terminate.")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to quarantine/terminate PID {pid}: {e}")
+            return False
+
+    @staticmethod
+    def terminate_single_process(pid: int) -> bool:
+        """
+        Forcefully terminates a single process without touching its children.
+        """
+        try:
+            p = psutil.Process(pid)
+            p.suspend()
+            p.terminate()
+            p.wait(timeout=3)
+            logger.info(f"Terminated single process PID {pid}.")
+            return not psutil.pid_exists(pid)
+        except psutil.NoSuchProcess:
+            logger.warning(f"Process {pid} already dead, cannot terminate.")
+            return False
+        except psutil.AccessDenied:
+            logger.warning(f"Access denied terminating PID {pid}")
+            return False
+        except psutil.TimeoutExpired:
+            p.kill()
+            return not psutil.pid_exists(pid)
+        except Exception as e:
+            logger.error(f"Failed to terminate PID {pid}: {e}")
+            return False
+
     @staticmethod
     def terminate_process_tree(parent_pid: int) -> bool:
         """
@@ -41,5 +112,56 @@ class Preventer:
             except psutil.Error:
                 pass
 
-        logger.warning(f"Terminated process tree for parent PID {parent_pid} ({len(processes_to_kill)} processes killed).")
+        logger.info(f"Terminated process tree for parent PID {parent_pid} ({len(processes_to_kill)} processes killed).")
+        
+        # Explicit process death verification
+        try:
+            if psutil.pid_exists(parent_pid):
+                return False
+        except Exception:
+            pass
+            
         return True
+
+    @staticmethod
+    def execute_policy(policy: dict, target_pid: int, files_to_quarantine: list = None) -> bool:
+        """
+        Securely executes a structured JSON policy action.
+        Validates the action string against an allow-list of safe capabilities.
+        """
+        action = policy.get("action", "MONITOR_ONLY")
+        
+        if action == "MONITOR_ONLY":
+            logger.info(f"Policy indicates MONITOR_ONLY. No local mitigation taken for PID {target_pid}.")
+            return True
+            
+        elif action == "TERMINATE_PROCESS_TREE":
+            logger.warning(f"Executing policy TERMINATE_PROCESS_TREE on PID {target_pid}")
+            success = Preventer.terminate_process_tree(target_pid)
+            if success:
+                logger.info(f"Mitigation successful: PID {target_pid} tree eradicated.")
+            else:
+                logger.error(f"Mitigation failed or incomplete for PID {target_pid}.")
+            return success
+            
+        elif action == "TERMINATE_SINGLE_PROCESS":
+            logger.warning(f"Executing policy TERMINATE_SINGLE_PROCESS on PID {target_pid}")
+            success = Preventer.terminate_single_process(target_pid)
+            if success:
+                logger.info(f"Mitigation successful: PID {target_pid} eradicated.")
+            else:
+                logger.error(f"Mitigation failed for PID {target_pid}.")
+            return success
+            
+        elif action == "QUARANTINE_AND_TERMINATE":
+            logger.warning(f"Executing policy QUARANTINE_AND_TERMINATE on PID {target_pid}")
+            success = Preventer.quarantine_and_terminate(target_pid, files_to_quarantine)
+            if success:
+                logger.info(f"Mitigation successful: PID {target_pid} quarantined and eradicated.")
+            else:
+                logger.error(f"Mitigation failed for PID {target_pid}.")
+            return success
+            
+        else:
+            logger.error(f"Unsupported policy action '{action}'. Rejecting execution for safety.")
+            return False

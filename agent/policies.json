@@ -1,0 +1,50 @@
+{
+    "version": "1.0",
+    "policies": [
+        {
+            "id": "pol_high_anomaly_storm",
+            "trigger": {
+                "risk_tier": "HIGH",
+                "behavior_type": "process_storm"
+            },
+            "action": "TERMINATE_PROCESS_TREE",
+            "reason": "Generic mitigation for high-confidence anomalous process or memory storms."
+        },
+        {
+            "id": "pol_suspicious_monitoring",
+            "trigger": {
+                "risk_tier": "SUSPICIOUS",
+                "behavior_type": "any"
+            },
+            "action": "MONITOR_ONLY",
+            "reason": "Behavior is anomalous but below prevention threshold. Deferring to cloud Risk Fusion."
+        },
+        {
+            "id": "pol_high_resource_exhaustion",
+            "trigger": {
+                "risk_tier": "HIGH",
+                "behavior_type": "anomalous_process"
+            },
+            "action": "TERMINATE_SINGLE_PROCESS",
+            "reason": "Generic mitigation for a single highly anomalous process (e.g. CPU/Memory exhaustion without children)."
+        },
+        {
+            "id": "pol_resource_hijacking",
+            "trigger": {
+                "risk_tier": "HIGH",
+                "behavior_type": "resource_hijacker"
+            },
+            "action": "TERMINATE_PROCESS_TREE",
+            "reason": "Target identified as a sustained resource hijacker (Cryptominer). Terminating entire tree to prevent respawn scripts."
+        },
+        {
+            "id": "pol_ransomware",
+            "trigger": {
+                "risk_tier": "HIGH",
+                "behavior_type": "ransomware"
+            },
+            "action": "QUARANTINE_AND_TERMINATE",
+            "reason": "Target is performing mass file writes in protected user directories. Terminating tree and quarantining touched files."
+        }
+    ]
+}
