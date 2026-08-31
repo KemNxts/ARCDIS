@@ -29,3 +29,22 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         
     user["id"] = str(user.pop("_id"))
     return user
+
+from fastapi import Header
+
+async def get_agent_identity(x_user_id: str = Header(None, alias="X-User-Id")):
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="Missing X-User-Id header")
+        
+    users_col = get_user_collection()
+    from bson import ObjectId
+    try:
+        user = await users_col.find_one({"_id": ObjectId(x_user_id)})
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid X-User-Id format")
+        
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+        
+    user["id"] = str(user.pop("_id"))
+    return user

@@ -10,7 +10,7 @@ class Reporter:
         self.base_url = config.BACKEND_URL
         self.agent_id = config.AGENT_ID
         self.headers = {
-            "Authorization": f"Bearer {config.USER_TOKEN}",
+            "X-User-Id": config.USER_ID,
             "Content-Type": "application/json"
         }
         self.heartbeat_thread = None

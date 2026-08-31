@@ -3,13 +3,13 @@ from typing import List, Optional
 from datetime import datetime
 from app.schemas.attack import AttackReport, AttackResponse
 from app.models.attack import AttackModel
-from app.utils.dependencies import get_current_user
+from app.utils.dependencies import get_current_user, get_agent_identity
 from app.database import get_attack_collection, get_agent_collection
 
 router = APIRouter()
 
 @router.post("", response_model=AttackResponse, status_code=201)
-async def report_attack(attack_in: AttackReport, current_user: dict = Depends(get_current_user)):
+async def report_attack(attack_in: AttackReport, current_user: dict = Depends(get_agent_identity)):
     # Verify agent belongs to user
     agents_col = get_agent_collection()
     agent = await agents_col.find_one({"agent_id": attack_in.agent_id, "user_id": str(current_user["id"])})

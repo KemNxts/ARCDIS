@@ -8,7 +8,7 @@ load_dotenv()
 class Config:
     # Identity
     AGENT_ID = os.getenv("AGENT_ID", "")
-    USER_TOKEN = os.getenv("USER_TOKEN", "")
+    USER_ID = os.getenv("USER_ID", "")
     
     # System Info
     HOSTNAME = platform.node()
@@ -31,7 +31,7 @@ class Config:
     def validate(cls):
         if not cls.AGENT_ID:
             raise ValueError("AGENT_ID must be set in .env")
-        if not cls.USER_TOKEN:
-            raise ValueError("USER_TOKEN must be set in .env")
+        if not cls.USER_ID:
+            raise ValueError("USER_ID must be set in .env")
 
 config = Config()
