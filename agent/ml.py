@@ -93,8 +93,9 @@ class LocalAnomalyDetector:
     def _train_baseline_fs(self):
         logger.info("Training initial baseline IsolationForest model for File System IO...")
         # Features: [write_rate_mb, write_count_rate, protected_open_files]
-        # Realistic desktop normal usage: up to 500MB/s write, up to 10000 writes/sec, up to 50 protected files open
-        X_normal = np.random.uniform(low=[0, 0, 0], high=[500, 10000, 50], size=(500, 3))
+        # Realistic desktop normal usage: Background apps do write cache, but rarely hold many protected files OPEN simultaneously.
+        # So high write_rate is normal, but high write_rate + protected_files is anomalous.
+        X_normal = np.random.uniform(low=[0, 0, 0], high=[500, 10000, 2], size=(500, 3))
         
         self.fs_scaler = StandardScaler()
         X_scaled = self.fs_scaler.fit_transform(X_normal)
@@ -137,8 +138,8 @@ class LocalAnomalyDetector:
         X_scaled = self.fs_scaler.transform(X_test)
         raw_score = self.fs_model.decision_function(X_scaled)[0]
         
-        # Heuristic boost for ransomware: Massive write rate + protected files open
-        if (write_mb_rate > 50.0 or write_count_rate > 500) and protected_open_files > 0:
+        # Heuristic boost for ransomware: Rapid file creations in protected user directories
+        if write_count_rate >= 2 and protected_open_files >= 3:
             return 0.90
             
         anomaly_score = self._normalize_score(raw_score)

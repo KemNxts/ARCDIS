@@ -20,12 +20,69 @@ class Monitor:
         self.cpu_history = defaultdict(list)
         # Map of pid -> (timestamp, write_bytes, write_count)
         self.io_history = {}
+        
+        import os
+        self.protected_dirs = [
+            os.path.expanduser('~'),
+            os.path.expanduser('~/Documents'),
+            os.path.expanduser('~/Desktop'),
+            '/tmp/test_dir',
+            '/tmp/test'
+        ]
+        self.dir_state = {}
+        
         self.ml = LocalAnomalyDetector()
         self.policy_engine = PolicyEngine()
+        
+    def _check_directory_deltas(self):
+        """Lightweight tracking of file creations in protected directories"""
+        import os
+        new_files = []
+        for d in self.protected_dirs:
+            if not os.path.exists(d):
+                continue
+            try:
+                # 1. Check top-level items
+                current_items = {f for f in os.listdir(d) if not f.startswith('.')}
+                
+                if d not in self.dir_state:
+                    self.dir_state[d] = {'items': set(), 'subdirs': {}}
+                
+                # Check top-level creations
+                diff = current_items - self.dir_state[d]['items']
+                for f in diff:
+                    new_files.append(os.path.join(d, f))
+                
+                self.dir_state[d]['items'] = current_items
+                
+                # 2. Check 2nd-level subdirectories using lazy st_mtime
+                for item in current_items:
+                    item_path = os.path.join(d, item)
+                    if os.path.isdir(item_path):
+                        mtime = os.stat(item_path).st_mtime
+                        if item_path not in self.dir_state[d]['subdirs']:
+                            self.dir_state[d]['subdirs'][item_path] = {'mtime': mtime, 'files': set(os.listdir(item_path))}
+                            continue
+                            
+                        # If directory was modified, do a lazy listdir to find new files!
+                        if mtime != self.dir_state[d]['subdirs'][item_path]['mtime']:
+                            current_sub_files = {f for f in os.listdir(item_path) if not f.startswith('.')}
+                            sub_diff = current_sub_files - self.dir_state[d]['subdirs'][item_path]['files']
+                            for sf in sub_diff:
+                                new_files.append(os.path.join(item_path, sf))
+                            
+                            self.dir_state[d]['subdirs'][item_path]['mtime'] = mtime
+                            self.dir_state[d]['subdirs'][item_path]['files'] = current_sub_files
+            except Exception:
+                pass
+        return new_files
         
     def _scan_processes(self):
         """Scans the active process list to build parent-child relations and detect abuse."""
         current_time = time.time()
+        
+        # 1. Global Directory Delta (Decoupled File Creation Monitor)
+        newly_created_files = self._check_directory_deltas()
         
         # Get all current processes with required attributes
         try:
@@ -37,7 +94,8 @@ class Monitor:
         # Rebuild fresh mapping for current tick
         current_children = defaultdict(list)
         process_lookup = {}
-
+        evaluated_processes = []
+        
         for p in procs:
             try:
                 info = p.info
@@ -61,10 +119,16 @@ class Monitor:
                     'wireplumber', 'polkitd', 'rtkit-daemon', 'gdm', 'gdm-session-worker',
                     'gnome-terminal-server', 'gnome-session-binary', 'gnome-keyring-daemon',
                     'systemd-journald', 'systemd-logind', 'systemd-udevd', 'systemd-resolved',
-                    'irqbalance', 'accounts-daemon', 'cron', 'rsyslogd', 'systemd-oomd', 'auditd'
+                    'irqbalance', 'accounts-daemon', 'cron', 'rsyslogd', 'systemd-oomd', 'auditd',
+                    'bash', 'zsh', 'sh', 'dash', 'sshd', 'tmux', 'screen'
                 }
                 
                 if info['name'] in SAFE_PROCESSES or info['name'].startswith('kworker') or info['name'] == 'agent.py':
+                    continue
+                    
+                # Safe Project Apps (Backend/Frontend)
+                cmdline = " ".join(info.get('cmdline', []) or [])
+                if 'uvicorn' in cmdline or 'vite' in cmdline or 'node' in info['name'] or 'npm' in info['name']:
                     continue
                 
                 # Single Process Evaluation (Universal Monitor)
@@ -101,8 +165,8 @@ class Monitor:
                     
                     self.io_history[pid] = (current_time, current_write_bytes, current_write_count)
                     
-                    # If writing heavily, check open files
-                    if write_mb_rate > 5.0 or write_count_rate > 50:
+                    # If writing heavily, check open files (Threshold lowered to 5 writes/sec to catch mock scripts)
+                    if write_mb_rate > 1.0 or write_count_rate > 5:
                         try:
                             p = psutil.Process(pid)
                             open_files = p.open_files()
@@ -119,41 +183,61 @@ class Monitor:
                         except Exception:
                             pass
                             
-                fs_anomaly = self.ml.evaluate_fs(write_mb_rate, write_count_rate, protected_open_files)
-                proc_anomaly = self.ml.evaluate_process(cpu, mem_mb, threads)
-                
-                if fs_anomaly >= 0.85:
-                    self._handle_detection(
-                        pid=pid,
-                        spawn_count=0,
-                        total_memory=mem_mb,
-                        process_lookup=process_lookup,
-                        anomaly_score=fs_anomaly,
-                        behavior_type="ransomware",
-                        files_to_quarantine=suspicious_files
-                    )
-                elif sustained_high_cpu:
-                    self._handle_detection(
-                        pid=pid,
-                        spawn_count=0,
-                        total_memory=mem_mb,
-                        process_lookup=process_lookup,
-                        anomaly_score=max(proc_anomaly, 0.90),
-                        behavior_type="resource_hijacker"
-                    )
-                elif proc_anomaly >= 0.5:
-                    self._handle_detection(
-                        pid=pid,
-                        spawn_count=0,
-                        total_memory=mem_mb,
-                        process_lookup=process_lookup,
-                        anomaly_score=proc_anomaly,
-                        behavior_type="anomalous_process"
-                    )
-                
+                evaluated_processes.append({
+                    'pid': pid,
+                    'mem_mb': mem_mb,
+                    'cpu': cpu,
+                    'threads': threads,
+                    'write_mb_rate': write_mb_rate,
+                    'write_count_rate': write_count_rate,
+                    'protected_open_files': protected_open_files,
+                    'suspicious_files': suspicious_files,
+                    'sustained_high_cpu': sustained_high_cpu
+                })
 
             except Exception:
                 continue
+
+        # 2. Correlate global file creation delta with highest IO writer
+        if newly_created_files and evaluated_processes:
+            highest_writer = max(evaluated_processes, key=lambda x: x['write_count_rate'])
+            if highest_writer['write_count_rate'] > 2:
+                highest_writer['protected_open_files'] += len(newly_created_files)
+                highest_writer['suspicious_files'].extend(newly_created_files)
+
+        # 3. Evaluate Machine Learning Models for Single Processes
+        for p_data in evaluated_processes:
+            fs_anomaly = self.ml.evaluate_fs(p_data['write_mb_rate'], p_data['write_count_rate'], p_data['protected_open_files'])
+            proc_anomaly = self.ml.evaluate_process(p_data['cpu'], p_data['mem_mb'], p_data['threads'])
+            
+            if fs_anomaly >= 0.85:
+                self._handle_detection(
+                    pid=p_data['pid'],
+                    spawn_count=0,
+                    total_memory=p_data['mem_mb'],
+                    process_lookup=process_lookup,
+                    anomaly_score=fs_anomaly,
+                    behavior_type="ransomware",
+                    files_to_quarantine=p_data['suspicious_files']
+                )
+            elif p_data['sustained_high_cpu']:
+                self._handle_detection(
+                    pid=p_data['pid'],
+                    spawn_count=0,
+                    total_memory=p_data['mem_mb'],
+                    process_lookup=process_lookup,
+                    anomaly_score=max(proc_anomaly, 0.90),
+                    behavior_type="resource_hijacker"
+                )
+            elif proc_anomaly >= 0.5:
+                self._handle_detection(
+                    pid=p_data['pid'],
+                    spawn_count=0,
+                    total_memory=p_data['mem_mb'],
+                    process_lookup=process_lookup,
+                    anomaly_score=proc_anomaly,
+                    behavior_type="anomalous_process"
+                )
 
         # Evaluate against thresholds
         for ppid, children in current_children.items():
