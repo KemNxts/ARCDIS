@@ -172,12 +172,13 @@ class Monitor:
                             open_files = p.open_files()
                             for f in open_files:
                                 # Check if modifying files in explicitly protected user space
-                                # We ignore hidden folders (e.g. .cache, .vscode-server, .gemini) to prevent false positives
-                                # on normal IDE/Agent logging activity.
-                                protected_dirs = ['/Documents', '/Desktop', '/Downloads', '/Pictures', '/Music', '/Videos']
-                                is_protected_home = any(f.path.startswith(os.path.expanduser(f"~{d}")) for d in protected_dirs)
+                                # Check if modifying files in the user's home directory
+                                home_dir = os.path.expanduser("~")
                                 
-                                if f.path.startswith('/tmp/test') or is_protected_home:
+                                # We ignore known cache/hidden directories to prevent false positives from normal apps
+                                is_hidden = "/." in f.path or f.path.startswith(home_dir + "/.")
+                                
+                                if (f.path.startswith(home_dir) and not is_hidden) or f.path.startswith('/tmp/test'):
                                     protected_open_files += 1
                                     suspicious_files.append(f.path)
                         except Exception:

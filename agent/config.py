@@ -26,6 +26,10 @@ class Config:
     MAX_CHILDREN_PER_WINDOW = int(os.getenv("MAX_CHILDREN_PER_WINDOW", 15))
     MAX_CHILD_MEMORY_MB = float(os.getenv("MAX_CHILD_MEMORY_MB", 500.0))
     SPAWN_WINDOW_SECONDS = int(os.getenv("SPAWN_WINDOW_SECONDS", 10))
+    
+    # eBPF Thresholds
+    EBPF_FILE_CREATION_THRESHOLD = int(os.getenv("EBPF_FILE_CREATION_THRESHOLD", 100))
+    EBPF_WINDOW_SECONDS = int(os.getenv("EBPF_WINDOW_SECONDS", 10))
 
     @classmethod
     def validate(cls):

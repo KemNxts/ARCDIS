@@ -11,6 +11,8 @@ MODEL_PATH_PROCESS = os.path.join(os.path.dirname(__file__), 'local_process_mode
 SCALER_PATH_PROCESS = os.path.join(os.path.dirname(__file__), 'local_process_scaler.pkl')
 MODEL_PATH_FS = os.path.join(os.path.dirname(__file__), 'local_fs_model.pkl')
 SCALER_PATH_FS = os.path.join(os.path.dirname(__file__), 'local_fs_scaler.pkl')
+MODEL_PATH_EBPF = os.path.join(os.path.dirname(__file__), 'local_ebpf_model.pkl')
+SCALER_PATH_EBPF = os.path.join(os.path.dirname(__file__), 'local_ebpf_scaler.pkl')
 
 class LocalAnomalyDetector:
     def __init__(self):
@@ -20,6 +22,8 @@ class LocalAnomalyDetector:
         self.process_scaler = None
         self.fs_model = None
         self.fs_scaler = None
+        self.ebpf_model = None
+        self.ebpf_scaler = None
         self._load_or_train_models()
 
     def _load_or_train_models(self):
@@ -58,6 +62,18 @@ class LocalAnomalyDetector:
                 self._train_baseline_fs()
         else:
             self._train_baseline_fs()
+
+        # Load or train ebpf model
+        if os.path.exists(MODEL_PATH_EBPF) and os.path.exists(SCALER_PATH_EBPF):
+            try:
+                self.ebpf_model = joblib.load(MODEL_PATH_EBPF)
+                self.ebpf_scaler = joblib.load(SCALER_PATH_EBPF)
+                logger.info(f"Loaded existing ebpf ML model from {MODEL_PATH_EBPF}")
+            except Exception as e:
+                logger.error(f"Failed to load ebpf model: {e}. Retraining a fresh baseline.")
+                self._train_baseline_ebpf()
+        else:
+            self._train_baseline_ebpf()
 
     def _train_baseline_tree(self):
         logger.info("Training initial baseline IsolationForest model for process trees...")
@@ -107,6 +123,22 @@ class LocalAnomalyDetector:
         joblib.dump(self.fs_scaler, SCALER_PATH_FS)
         logger.info(f"Baseline fs model saved to {MODEL_PATH_FS}")
 
+    def _train_baseline_ebpf(self):
+        logger.info("Training initial baseline IsolationForest model for eBPF file creations...")
+        # Features: [file_creation_count]
+        # Normal behavior is up to ~20 file creations in a short window.
+        X_normal = np.random.uniform(low=[0], high=[20], size=(500, 1))
+        
+        self.ebpf_scaler = StandardScaler()
+        X_scaled = self.ebpf_scaler.fit_transform(X_normal)
+        
+        self.ebpf_model = IsolationForest(contamination=0.01, random_state=42)
+        self.ebpf_model.fit(X_scaled)
+        
+        joblib.dump(self.ebpf_model, MODEL_PATH_EBPF)
+        joblib.dump(self.ebpf_scaler, SCALER_PATH_EBPF)
+        logger.info(f"Baseline ebpf model saved to {MODEL_PATH_EBPF}")
+
     def _normalize_score(self, raw_score: float) -> float:
         if raw_score >= 0:
             return 0.0
@@ -141,6 +173,20 @@ class LocalAnomalyDetector:
         # Heuristic boost for ransomware: Rapid file creations in protected user directories
         if write_count_rate >= 2 and protected_open_files >= 3:
             return 0.90
+            
+        anomaly_score = self._normalize_score(raw_score)
+        return float(round(anomaly_score, 2))
+
+    def evaluate_ebpf(self, file_creation_count: int) -> float:
+        if not self.ebpf_model or not self.ebpf_scaler:
+            return 0.0
+            
+        X_test = np.array([[file_creation_count]])
+        X_scaled = self.ebpf_scaler.transform(X_test)
+        raw_score = self.ebpf_model.decision_function(X_scaled)[0]
+        
+        if file_creation_count >= 50:
+            return 0.95
             
         anomaly_score = self._normalize_score(raw_score)
         return float(round(anomaly_score, 2))

@@ -2,6 +2,7 @@ import sys
 import signal
 from reporter import Reporter
 from monitor import Monitor
+from ebpf_monitor import EBPFMonitor
 from utils import logger
 from config import config
 
@@ -9,6 +10,7 @@ class ARCDISAgent:
     def __init__(self):
         self.reporter = Reporter()
         self.monitor = Monitor(self.reporter)
+        self.ebpf_monitor = EBPFMonitor(self.reporter)
 
     def start(self):
         logger.info("Initializing ARCDIS Agent...")
@@ -28,7 +30,10 @@ class ARCDISAgent:
         # 3. Start Heartbeat
         self.reporter.start_heartbeat()
 
-        # 4. Start Monitoring (Blocking)
+        # 4. Start eBPF Monitor (Non-blocking)
+        self.ebpf_monitor.start()
+
+        # 5. Start Monitoring (Blocking)
         try:
             self.monitor.start()
         except Exception as e:
@@ -38,6 +43,7 @@ class ARCDISAgent:
 
     def stop(self):
         logger.info("Stopping ARCDIS Agent...")
+        self.ebpf_monitor.stop()
         self.monitor.stop()
         self.reporter.stop_heartbeat()
         logger.info("Agent stopped cleanly.")
@@ -51,6 +57,23 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 if __name__ == "__main__":
+    import ctypes, sys
+    try:
+        libc = ctypes.CDLL('libc.so.6')
+        # PR_SET_NAME = 15
+        libc.prctl(15, b'Arcdis\0', 0, 0, 0)
+    except Exception:
+        pass
+    
+    try:
+        import setproctitle
+        setproctitle.setproctitle("Arcdis")
+    except ImportError:
+        pass
+        
+    if len(sys.argv) > 0:
+        sys.argv[0] = "Arcdis"
+
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)

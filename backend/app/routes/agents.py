@@ -45,9 +45,13 @@ fi
 echo "[+] Installing ARCDIS Agent for Ubuntu..."
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 
+echo "[+] Installing eBPF dependencies (bcc, linux-headers)..."
+apt-get update
+apt-get install -y python3-bpfcc linux-headers-$(uname -r)
+
 # Setup virtual environment as the regular user to avoid root-owned files in venv
 SUDO_USER_NAME=${SUDO_USER:-root}
-sudo -u $SUDO_USER_NAME python3 -m venv $DIR/venv
+sudo -u $SUDO_USER_NAME python3 -m venv --system-site-packages $DIR/venv
 sudo -u $SUDO_USER_NAME $DIR/venv/bin/pip install -r $DIR/requirements.txt
 
 # Create systemd service
