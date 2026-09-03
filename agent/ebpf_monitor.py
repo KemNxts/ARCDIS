@@ -156,7 +156,7 @@ class EBPFMonitor:
                     'chrome', 'chromium', 'firefox', 'brave', 'code', 'vscode',
                     'apt', 'apt-get', 'dpkg', 'snapd', 'dockerd', 'containerd',
                     'node', 'npm', 'java', 'systemd', 'rsyslogd', 'journald',
-                    'git', 'tar', 'unzip', 'gzip'
+                    'git', 'tar', 'unzip', 'gzip', 'antigravity', 'gemini'
                 }
                 
                 if any(app in proc_name for app in safe_apps):
