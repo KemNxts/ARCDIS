@@ -13,7 +13,8 @@ MODEL_PATH_FS = os.path.join(os.path.dirname(__file__), 'local_fs_model.pkl')
 SCALER_PATH_FS = os.path.join(os.path.dirname(__file__), 'local_fs_scaler.pkl')
 MODEL_PATH_EBPF = os.path.join(os.path.dirname(__file__), 'local_ebpf_model.pkl')
 SCALER_PATH_EBPF = os.path.join(os.path.dirname(__file__), 'local_ebpf_scaler.pkl')
-
+MODEL_PATH_CRON = os.path.join(os.path.dirname(__file__), 'local_cron_model.pkl')
+SCALER_PATH_CRON = os.path.join(os.path.dirname(__file__), 'local_cron_scaler.pkl')
 class LocalAnomalyDetector:
     def __init__(self):
         self.tree_model = None
@@ -24,6 +25,8 @@ class LocalAnomalyDetector:
         self.fs_scaler = None
         self.ebpf_model = None
         self.ebpf_scaler = None
+        self.cron_model = None
+        self.cron_scaler = None
         self._load_or_train_models()
 
     def _load_or_train_models(self):
@@ -74,6 +77,18 @@ class LocalAnomalyDetector:
                 self._train_baseline_ebpf()
         else:
             self._train_baseline_ebpf()
+
+        # Load or train cron model
+        if os.path.exists(MODEL_PATH_CRON) and os.path.exists(SCALER_PATH_CRON):
+            try:
+                self.cron_model = joblib.load(MODEL_PATH_CRON)
+                self.cron_scaler = joblib.load(SCALER_PATH_CRON)
+                logger.info(f"Loaded existing cron ML model from {MODEL_PATH_CRON}")
+            except Exception as e:
+                logger.error(f"Failed to load cron model: {e}. Retraining a fresh baseline.")
+                self._train_baseline_cron()
+        else:
+            self._train_baseline_cron()
 
     def _train_baseline_tree(self):
         logger.info("Training initial baseline IsolationForest model for process trees...")
@@ -138,6 +153,25 @@ class LocalAnomalyDetector:
         joblib.dump(self.ebpf_model, MODEL_PATH_EBPF)
         joblib.dump(self.ebpf_scaler, SCALER_PATH_EBPF)
         logger.info(f"Baseline ebpf model saved to {MODEL_PATH_EBPF}")
+
+    def _train_baseline_cron(self):
+        logger.info("Training initial baseline IsolationForest model for cron jobs...")
+        # Features: [line_length, entropy, suspicious_keywords_count, network_and_obfuscation_score]
+        # Normal cron jobs are short, low entropy, usually 0 suspicious keywords, 0 network/obfuscation
+        X_normal = np.random.uniform(low=[10, 1.0, 0, 0], high=[80, 3.5, 0, 0], size=(500, 4))
+        # Mix in a few normal with 1 suspicious keyword (e.g. bash or python used safely)
+        X_edge = np.random.uniform(low=[20, 2.0, 1, 0], high=[100, 4.0, 1, 0], size=(50, 4))
+        X_train = np.vstack([X_normal, X_edge])
+        
+        self.cron_scaler = StandardScaler()
+        X_scaled = self.cron_scaler.fit_transform(X_train)
+        
+        self.cron_model = IsolationForest(contamination=0.01, random_state=42)
+        self.cron_model.fit(X_scaled)
+        
+        joblib.dump(self.cron_model, MODEL_PATH_CRON)
+        joblib.dump(self.cron_scaler, SCALER_PATH_CRON)
+        logger.info(f"Baseline cron model saved to {MODEL_PATH_CRON}")
 
     def _normalize_score(self, raw_score: float) -> float:
         if raw_score >= 0:
@@ -204,4 +238,25 @@ class LocalAnomalyDetector:
             return 0.85
             
         anomaly_score = self._normalize_score(raw_score)
+        return float(round(anomaly_score, 2))
+
+    def evaluate_cron(self, line_length: int, entropy: float, suspicious_keywords_count: int, network_and_obfuscation_score: int) -> float:
+        if not self.cron_model or not self.cron_scaler:
+            return 0.0
+            
+        X_test = np.array([[line_length, entropy, suspicious_keywords_count, network_and_obfuscation_score]])
+        X_scaled = self.cron_scaler.transform(X_test)
+        raw_score = self.cron_model.decision_function(X_scaled)[0]
+        
+        anomaly_score = self._normalize_score(raw_score)
+        
+        # Hard heuristics for reverse shells and obfuscation typical of T1053.003
+        if suspicious_keywords_count >= 2 or network_and_obfuscation_score >= 1:
+            anomaly_score = max(anomaly_score, 0.95)
+        elif suspicious_keywords_count >= 1:
+            anomaly_score = max(anomaly_score, 0.85)
+            
+        if entropy > 5.5:
+            anomaly_score = max(anomaly_score, 0.95)
+            
         return float(round(anomaly_score, 2))

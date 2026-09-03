@@ -108,7 +108,7 @@ class EBPFMonitor:
         logger.info(f"Initializing eBPF Monitor for T1486 (Threshold: {config.EBPF_FILE_CREATION_THRESHOLD} files / {config.EBPF_WINDOW_SECONDS}s)")
         
         try:
-            self.bpf = BPF(text=bpf_text)
+            self.bpf = BPF(text=bpf_text, cflags=["-w"])
             self.bpf["events"].open_perf_buffer(self._print_event)
             
             self.thread = threading.Thread(target=self._poll_loop, daemon=True)

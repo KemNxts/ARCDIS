@@ -4,8 +4,46 @@ import shutil
 import psutil
 from typing import List
 from utils import logger
+import subprocess
+from utils import logger
 
 class Preventer:
+    @staticmethod
+    def remove_cron_line(malicious_line: str) -> bool:
+        """
+        Removes a specific malicious line from all users' crontabs.
+        """
+        import subprocess
+        import pwd
+        
+        success = False
+        try:
+            users = [p.pw_name for p in pwd.getpwall() if p.pw_uid >= 1000 or p.pw_name == 'root']
+            for user in users:
+                result = subprocess.run(['crontab', '-u', user, '-l'], capture_output=True, text=True)
+                if result.returncode != 0:
+                    continue
+                    
+                current_cron = result.stdout.splitlines()
+                if malicious_line not in current_cron:
+                    continue
+                    
+                new_cron = [line for line in current_cron if line != malicious_line]
+                new_cron_text = "\n".join(new_cron) + "\n"
+                
+                process = subprocess.Popen(['crontab', '-u', user, '-'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                stdout, stderr = process.communicate(input=new_cron_text)
+                
+                if process.returncode == 0:
+                    logger.info(f"Successfully removed malicious line from {user}'s crontab.")
+                    success = True
+                else:
+                    logger.error(f"Failed to write new crontab for {user}: {stderr}")
+        except Exception as e:
+            logger.error(f"Error modifying crontab: {e}")
+        
+        return success
+
     @staticmethod
     def quarantine_and_terminate(pid: int, files_to_quarantine: list = None) -> bool:
         """

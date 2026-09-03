@@ -22,18 +22,156 @@ class Monitor:
         self.io_history = {}
         
         import os
-        self.protected_dirs = [
-            os.path.expanduser('~'),
-            os.path.expanduser('~/Documents'),
-            os.path.expanduser('~/Desktop'),
-            '/tmp/test_dir',
-            '/tmp/test'
-        ]
+        import pwd
+        self.protected_dirs = ['/tmp/test_dir', '/tmp/test']
+        self.home_dirs = []
+        try:
+            for p in pwd.getpwall():
+                if p.pw_uid >= 1000 or p.pw_name == 'root':
+                    self.protected_dirs.extend([
+                        p.pw_dir,
+                        os.path.join(p.pw_dir, 'Documents'),
+                        os.path.join(p.pw_dir, 'Desktop')
+                    ])
+                    self.home_dirs.append(p.pw_dir)
+        except Exception as e:
+            logger.error(f"Failed to load user home directories: {e}")
         self.dir_state = {}
         
         self.ml = LocalAnomalyDetector()
         self.policy_engine = PolicyEngine()
+        self.last_cron_scan = 0
+        self.cron_baseline = set()
+        self._init_cron_baseline()
         
+    def _init_cron_baseline(self):
+        import subprocess
+        import pwd
+        import re
+        try:
+            users = [p.pw_name for p in pwd.getpwall() if p.pw_uid >= 1000 or p.pw_name == 'root']
+            suspicious_keywords = ['python', 'bash -c', 'sh -c', 'wget', 'curl', 'nc ', 'netcat', 'socat', '/dev/tcp', '/dev/udp', '/tmp', '/dev/shm', 'nohup', 'mkfifo']
+            
+            for user in users:
+                result = subprocess.run(['crontab', '-u', user, '-l'], capture_output=True, text=True)
+                if result.returncode == 0:
+                    for line in result.stdout.splitlines():
+                        line_str = line.strip()
+                        if line_str and not line_str.startswith('#'):
+                            # Evaluate before trusting pre-existing jobs
+                            kw_count = sum(1 for kw in suspicious_keywords if kw in line_str.lower())
+                            entropy = self._shannon_entropy(line_str)
+                            
+                            network_score = 0
+                            if re.search(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', line_str):
+                                network_score += 1
+                            if re.search(r'/\.[a-zA-Z0-9_-]+', line_str):
+                                network_score += 1
+                            if 'base64' in line_str.lower() or '| bash' in line_str or '| sh' in line_str:
+                                network_score += 1
+                                
+                            score = self.ml.evaluate_cron(len(line_str), entropy, kw_count, network_score)
+                            
+                            if score > 0.8:
+                                logger.warning(f"Detected pre-existing malicious cron job for {user} during startup: {line_str}")
+                                # Do not add to baseline. _scan_cron will eradicate it on the first loop!
+                            else:
+                                self.cron_baseline.add(line_str)
+            logger.info(f"Initialized cron baseline with {len(self.cron_baseline)} trusted entries.")
+        except Exception as e:
+            logger.error(f"Failed to initialize cron baseline: {e}")
+
+    def _shannon_entropy(self, data: str) -> float:
+        import math
+        if not data:
+            return 0
+        entropy = 0
+        for x in set(data):
+            p_x = float(data.count(x))/len(data)
+            entropy += - p_x*math.log2(p_x)
+        return entropy
+
+    def _scan_cron(self):
+        import subprocess
+        import pwd
+        import uuid
+        import re
+        current_time = time.time()
+        if current_time - self.last_cron_scan < 45:
+            return
+            
+        self.last_cron_scan = current_time
+        
+        try:
+            users = [p.pw_name for p in pwd.getpwall() if p.pw_uid >= 1000 or p.pw_name == 'root']
+            suspicious_keywords = ['python', 'bash -c', 'sh -c', 'wget', 'curl', 'nc ', 'netcat', 'socat', '/dev/tcp', '/dev/udp', '/tmp', '/dev/shm', 'nohup', 'mkfifo']
+            
+            for user in users:
+                result = subprocess.run(['crontab', '-u', user, '-l'], capture_output=True, text=True)
+                if result.returncode != 0:
+                    continue
+                    
+                current_cron = result.stdout.splitlines()
+                
+                for line in current_cron:
+                    line_str = line.strip()
+                    if not line_str or line_str.startswith('#'):
+                        continue
+                        
+                    if line_str not in self.cron_baseline:
+                        line_length = len(line_str)
+                        entropy = self._shannon_entropy(line_str)
+                        kw_count = sum(1 for kw in suspicious_keywords if kw in line_str.lower())
+                        
+                        network_score = 0
+                        if re.search(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', line_str):
+                            network_score += 1
+                        if re.search(r'/\.[a-zA-Z0-9_-]+', line_str):
+                            network_score += 1
+                        if 'base64' in line_str.lower() or '| bash' in line_str or '| sh' in line_str:
+                            network_score += 1
+                        
+                        anomaly_score = self.ml.evaluate_cron(line_length, entropy, kw_count, network_score)
+                        
+                        if anomaly_score > 0.8:
+                            logger.warning(f"Malicious Cron Job Detected in {user}'s crontab: {line_str}")
+                            print("\n" + "="*70)
+                            print("\033[91m\033[1m[!!!] T1053.003 CRON PERSISTENCE DETECTED [!!!]\033[0m")
+                            print(f"\033[93mTarget Line:\033[0m {line_str}")
+                            print(f"\033[93mUser:\033[0m {user}")
+                            print(f"\033[93mEvidence:\033[0m ML Score: {anomaly_score}, Entropy: {entropy:.2f}, Keywords: {kw_count}")
+                            print(f"\033[91m-> Action:\033[0m Removing cron line & terminating related processes")
+                            print("="*70 + "\n")
+                            
+                            mitigated = Preventer.remove_cron_line(line)
+                            
+                            for p in psutil.process_iter(['pid', 'cmdline']):
+                                try:
+                                    cmdline = " ".join(p.info.get('cmdline', []) or [])
+                                    if kw_count > 0 and any(kw in cmdline for kw in suspicious_keywords) and 'arcdis' not in cmdline.lower():
+                                        if len(cmdline) > 20: 
+                                            Preventer.terminate_process_tree(p.info['pid'])
+                                except:
+                                    pass
+                                    
+                            event = AttackEvent(
+                                attack_id=str(uuid.uuid4()),
+                                agent_id=config.AGENT_ID,
+                                technique="T1053.003",
+                                title="Cron Persistence",
+                                description=f"Detected abnormal cron job in {user}'s crontab. Score: {anomaly_score}. Line: {line_str}",
+                                features={"length": line_length, "entropy": entropy, "keywords": kw_count, "network_score": network_score},
+                                action_taken="CRON_LINE_REMOVED" if mitigated else "mitigation_failed",
+                                severity="high",
+                                local_anomaly_score=anomaly_score
+                            )
+                            self.reporter.send_attack_event(event)
+                        else:
+                            self.cron_baseline.add(line_str)
+                            
+        except Exception as e:
+            logger.error(f"Error scanning cron: {e}")
+
     def _check_directory_deltas(self):
         """Lightweight tracking of file creations in protected directories"""
         import os
@@ -171,14 +309,11 @@ class Monitor:
                             p = psutil.Process(pid)
                             open_files = p.open_files()
                             for f in open_files:
-                                # Check if modifying files in explicitly protected user space
-                                # Check if modifying files in the user's home directory
-                                home_dir = os.path.expanduser("~")
-                                
                                 # We ignore known cache/hidden directories to prevent false positives from normal apps
-                                is_hidden = "/." in f.path or f.path.startswith(home_dir + "/.")
+                                is_hidden = "/." in f.path
+                                is_in_home = any(f.path.startswith(h) for h in self.home_dirs)
                                 
-                                if (f.path.startswith(home_dir) and not is_hidden) or f.path.startswith('/tmp/test'):
+                                if (is_in_home and not is_hidden) or f.path.startswith('/tmp/test'):
                                     protected_open_files += 1
                                     suspicious_files.append(f.path)
                         except Exception:
@@ -395,6 +530,7 @@ class Monitor:
         try:
             while self.running:
                 self._scan_processes()
+                self._scan_cron()
                 time.sleep(config.MONITOR_INTERVAL)
         except Exception as e:
             logger.error(f"Monitor crashed: {e}")
